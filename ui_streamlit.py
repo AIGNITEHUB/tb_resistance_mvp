@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+# import từ package ở cùng repo (đã có __init__.py)
 from tb_resistance_mvp.pipeline import mutational_scan
 
 st.set_page_config(page_title="TB Resistance Predictor — MVP", layout="wide")
