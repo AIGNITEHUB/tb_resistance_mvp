@@ -11,9 +11,89 @@ try:
 except ImportError:
     DEMO_AVAILABLE = False
 
+# Import translation functions (inline to avoid new file dependency)
+def translate_dna_sequence(sequence: str, frame: int = 0) -> str:
+    """Translate DNA sequence to protein"""
+    CODON_TABLE = {
+        'ATA':'I', 'ATC':'I', 'ATT':'I', 'ATG':'M',
+        'ACA':'T', 'ACC':'T', 'ACG':'T', 'ACT':'T',
+        'AAC':'N', 'AAT':'N', 'AAA':'K', 'AAG':'K',
+        'AGC':'S', 'AGT':'S', 'AGA':'R', 'AGG':'R',
+        'CTA':'L', 'CTC':'L', 'CTG':'L', 'CTT':'L',
+        'CCA':'P', 'CCC':'P', 'CCG':'P', 'CCT':'P',
+        'CAC':'H', 'CAT':'H', 'CAA':'Q', 'CAG':'Q',
+        'CGA':'R', 'CGC':'R', 'CGG':'R', 'CGT':'R',
+        'GTA':'V', 'GTC':'V', 'GTG':'V', 'GTT':'V',
+        'GCA':'A', 'GCC':'A', 'GCG':'A', 'GCT':'A',
+        'GAC':'D', 'GAT':'D', 'GAA':'E', 'GAG':'E',
+        'GGA':'G', 'GGC':'G', 'GGG':'G', 'GGT':'G',
+        'TCA':'S', 'TCC':'S', 'TCG':'S', 'TCT':'S',
+        'TTC':'F', 'TTT':'F', 'TTA':'L', 'TTG':'L',
+        'TAC':'Y', 'TAT':'Y', 'TAA':'*', 'TAG':'*',
+        'TGC':'C', 'TGT':'C', 'TGA':'*', 'TGG':'W',
+    }
+    
+    sequence = sequence.upper().replace(" ", "").replace("\n", "")
+    sequence = sequence.replace("U", "T")
+    
+    valid_bases = set("ATCG")
+    if not all(base in valid_bases for base in sequence):
+        raise ValueError("Invalid DNA sequence. Only A, T, C, G allowed.")
+    
+    sequence = sequence[frame:]
+    
+    protein = []
+    for i in range(0, len(sequence) - 2, 3):
+        codon = sequence[i:i+3]
+        aa = CODON_TABLE.get(codon, 'X')
+        if aa == '*':
+            break
+        protein.append(aa)
+    
+    return ''.join(protein)
+
+
+def detect_orf(sequence: str, min_length: int = 100):
+    """Detect Open Reading Frames"""
+    sequence = sequence.upper().replace("U", "T").replace(" ", "").replace("\n", "")
+    orfs = []
+    
+    for frame in range(3):
+        seq_frame = sequence[frame:]
+        
+        for i in range(0, len(seq_frame) - 2, 3):
+            codon = seq_frame[i:i+3]
+            
+            if codon == 'ATG':
+                start = i + frame
+                
+                for j in range(i, len(seq_frame) - 2, 3):
+                    stop_codon = seq_frame[j:j+3]
+                    if stop_codon in ('TAA', 'TAG', 'TGA'):
+                        end = j + frame + 3
+                        
+                        if (end - start) >= min_length:
+                            orf_seq = sequence[start:end]
+                            try:
+                                protein = translate_dna_sequence(orf_seq, frame=0)
+                                orfs.append({
+                                    'start': start + 1,
+                                    'end': end,
+                                    'frame': frame,
+                                    'length_nt': end - start,
+                                    'length_aa': len(protein),
+                                    'protein': protein
+                                })
+                            except:
+                                pass
+                        break
+    
+    return orfs
+
+
 st.set_page_config(page_title="TB Resistance Predictor — Demo v2.0", layout="wide", initial_sidebar_state="expanded")
 
-# Custom CSS - FIXED molecule card background
+# Custom CSS
 st.markdown("""
 <style>
     .demo-badge {
@@ -54,7 +134,7 @@ with col_h2:
 
 st.caption("**NEW:** 6-group mutation classification & drug candidate suggestions (using simulated data for demo)")
 
-# Sidebar for info
+# Sidebar
 with st.sidebar:
     st.header("ℹ️ About Demo Mode")
     st.info("""
@@ -62,6 +142,7 @@ with st.sidebar:
     - ✅ Full 6-group classification
     - ✅ Filter criteria display
     - ✅ Example molecule suggestions
+    - ✅ Nucleotide → Protein translation
     - ⚠️ Using simulated SMILES & properties
     
     **For Production:**
@@ -80,7 +161,7 @@ with st.sidebar:
         - **M**: Motif/Core region
         """)
 
-# --- Session state init ---
+# Session state
 if "res" not in st.session_state:
     st.session_state.res = None
 if "cutoff" not in st.session_state:
@@ -90,25 +171,115 @@ if "show_adv" not in st.session_state:
 if "enable_filtering" not in st.session_state:
     st.session_state.enable_filtering = True
 
-# --- Inputs ---
+# --- INPUTS ---
 st.markdown("### 📝 Input Configuration")
 
-seq = st.text_area(
-    "Protein sequence (1-letter AA)", 
-    height=120, 
-    value="MASTKQLLAVGHVPRNTLDEYQFGLSWVKMTPNIAERCLVDSGHTVQFPARLKMGYDETIVNQALSRPWFKGCYMDTNSLEIRAQPLHGMSFYTKVDACIGLPNRHTQVEWMDASFKRLYTPGQNVLSEACRKIFHDGTMVLPQANSRWDYEKGTMLFPISHVQRDANCLGTEYWMKPRSFAVLQNDGSITRKMLEHVPV",
-    help="Enter your protein sequence using single-letter amino acid codes"
+# NEW: Input type selector
+input_type = st.radio(
+    "Input sequence type:",
+    ["Amino Acid (Protein)", "Nucleotide (DNA/RNA)"],
+    horizontal=True,
+    help="Choose whether to input protein or nucleotide sequence"
 )
 
+protein_seq = ""
+
+if input_type == "Amino Acid (Protein)":
+    # Original AA input
+    seq = st.text_area(
+        "Protein sequence (1-letter AA)", 
+        height=120, 
+        value="MASTKQLLAVGHVPRNTLDEYQFGLSWVKMTPNIAERCLVDSGHTVQFPARLKMGYDETIVNQALSRPWFKGCYMDTNSLEIRAQPLHGMSFYTKVDACIGLPNRHTQVEWMDASFKRLYTPGQNVLSEACRKIFHDGTMVLPQANSRWDYEKGTMLFPISHVQRDANCLGTEYWMKPRSFAVLQNDGSITRKMLEHVPV",
+        help="Enter your protein sequence using single-letter amino acid codes"
+    )
+    protein_seq = seq.strip().upper()
+    
+else:  # Nucleotide input
+    nt_seq = st.text_area(
+        "Nucleotide sequence (DNA/RNA)", 
+        height=120, 
+        value="ATGGCGTCAACAAAGCAGCTGCTGGCGGTCCATGTGCCGCGTAACACTGGACGAATATCAGTTTGGCCTGAGCTGGGTGAAGATGACGCCGAACATCGCCGAGCGCTGCCTGGTCGATTCGGGCCACACGGTGCAGTTCCCGGCGCGGCTCAAGATGGGCTACGATGAAACCATCGTGAACCAGGCGCTGAGCCGTCCGTGGTTCAAGGGCTGCTACATGGACACCAACAGCCTGGAGATCCGGGCGCAGCCGCTGCACGGGATGTCGTTCTACACGAAGGTGGACGCCTGCATCGGCCTGCCGAACCGGCACACGCAGGTGGAGTGGATGGACGCCTCATTCAAGCGGCTGTACACCCCGGGCCAGAACGTGCTGTCGGAGGCCTGCCGGAAGATCTTCCACGACGGCACCATGGTGCTGCCGCAGGCGAACAGCCGCTGGGACTATGAGAAGGGCACGATGCTGTTCCCGATCAGCCACGTCCAGCGCGACGCGAACTGCCTGGGCACCGAATACTGGATGAAGCCGCGCAGCTTCGCCGTGCTGCAGAACGACGGCAGCATCACCCGCAAGATGCTGGAGCACGTGCCGGTG",
+        help="Enter DNA or RNA sequence (will be translated to protein)"
+    )
+    
+    # Translation options
+    col_frame, col_auto = st.columns(2)
+    
+    with col_frame:
+        frame = st.selectbox(
+            "Reading frame",
+            [0, 1, 2],
+            help="Select reading frame for translation (0 = start from position 1)"
+        )
+    
+    with col_auto:
+        auto_detect = st.checkbox(
+            "Auto-detect ORF",
+            value=True,
+            help="Automatically detect the longest Open Reading Frame"
+        )
+    
+    # Translate
+    try:
+        if auto_detect:
+            orfs = detect_orf(nt_seq, min_length=100)
+            if orfs:
+                longest_orf = max(orfs, key=lambda x: x['length_aa'])
+                protein_seq = longest_orf['protein']
+                st.success(f"✅ Detected ORF: {longest_orf['length_aa']} AA (Frame {longest_orf['frame']}, Pos {longest_orf['start']}-{longest_orf['end']})")
+                
+                # Show all ORFs if multiple found
+                if len(orfs) > 1:
+                    with st.expander(f"🔍 Found {len(orfs)} ORFs - Click to view all"):
+                        orf_data = []
+                        for orf in orfs:
+                            orf_data.append({
+                                "Frame": orf['frame'],
+                                "Start": orf['start'],
+                                "End": orf['end'],
+                                "Length (nt)": orf['length_nt'],
+                                "Length (AA)": orf['length_aa']
+                            })
+                        st.dataframe(pd.DataFrame(orf_data), use_container_width=True)
+            else:
+                st.error("❌ No ORF detected (min length: 100 nt). Try manual frame selection.")
+                protein_seq = ""
+        else:
+            protein_seq = translate_dna_sequence(nt_seq, frame=frame)
+            st.info(f"ℹ️ Translated: {len(protein_seq)} amino acids (Frame {frame})")
+        
+        # Show translated sequence
+        if protein_seq:
+            with st.expander("🔬 View Translated Protein Sequence"):
+                st.code(protein_seq, language="text")
+                st.caption(f"Length: {len(protein_seq)} amino acids")
+                
+    except ValueError as e:
+        st.error(f"❌ Translation error: {e}")
+        protein_seq = ""
+    except Exception as e:
+        st.error(f"❌ Unexpected error: {e}")
+        protein_seq = ""
+
+# Region selection
 col1, col2, col3 = st.columns(3)
 with col1:
-    start = st.number_input("Region start (1-indexed)", min_value=1, value=150, step=1)
+    if protein_seq:
+        max_pos = len(protein_seq)
+        default_start = min(50, max_pos)
+        default_end = min(100, max_pos)
+    else:
+        max_pos = 1000
+        default_start = 50
+        default_end = 100
+    
+    start = st.number_input("Region start (1-indexed)", min_value=1, max_value=max_pos, value=default_start, step=1)
 with col2:
-    end = st.number_input("Region end (1-indexed)", min_value=1, value=200, step=1)
+    end = st.number_input("Region end (1-indexed)", min_value=1, max_value=max_pos, value=default_end, step=1)
 with col3:
     gene = st.text_input("Gene hint (optional)", value="rpoB", placeholder="e.g., rpoB, katG, pncA")
 
-# --- Settings ---
+# Settings
 with st.expander("⚙️ Analysis Settings", expanded=False):
     col_a, col_b = st.columns(2)
     with col_a:
@@ -133,7 +304,7 @@ scan = st.button("🔬 Scan Mutations", type="primary", use_container_width=True
 
 
 def build_df(res, cutoff):
-    """Build DataFrame from results - KEEP ORIGINAL FORMAT"""
+    """Build DataFrame from results"""
     rows = []
     for r in res["matrix"]:
         base = {
@@ -168,7 +339,7 @@ def build_df(res, cutoff):
 
 
 def render_molecule_card(mol, group):
-    """Render a molecule card with FIXED dark background"""
+    """Render molecule card with dark background"""
     st.markdown(f"""
     <div class="molecule-card">
         <strong>{mol.get('name', 'Unknown')}</strong> 
@@ -187,13 +358,13 @@ def render_molecule_card(mol, group):
 
 
 def render_results(res, cutoff, show_adv, enable_filtering):
-    """Render complete results - SIMPLIFIED VERSION"""
+    """Render complete results"""
     st.markdown("---")
     st.markdown("### 📊 Mutation Scan Results")
     
     df, p_cols = build_df(res, cutoff)
     
-    # Summary metrics (keep original)
+    # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total mutations", len(df))
@@ -211,7 +382,7 @@ def render_results(res, cutoff, show_adv, enable_filtering):
         avg_prob = df["Probability (max)"].mean()
         st.metric("Avg P(resist)", f"{avg_prob:.3f}")
     
-    # Mutation table - ORIGINAL SIMPLE VERSION (no styling changes)
+    # Mutation table
     st.markdown("#### 📋 Mutation Table")
     
     advanced_cols = ["d_hydro", "d_vol", "d_charge", "rel_pos", "center_dist", "motif_pen"]
@@ -219,10 +390,9 @@ def render_results(res, cutoff, show_adv, enable_filtering):
     visible_cols = base_cols + (advanced_cols if show_adv else [])
     visible_cols = [c for c in visible_cols if c in df.columns]
     
-    # Simple display without custom styling
     st.dataframe(df[visible_cols], use_container_width=True, height=420)
     
-    # Heatmaps (keep original)
+    # Heatmaps
     st.markdown("### 📈 Resistance Escape Maps")
     
     num_drugs = len(res["drugs"])
@@ -253,7 +423,7 @@ def render_results(res, cutoff, show_adv, enable_filtering):
                 st.pyplot(fig)
                 plt.close()
     
-    # Drug filtering results - KEEP BUT SIMPLIFY
+    # Drug filtering
     if enable_filtering and "drug_filtering" in res and res["drug_filtering"]["high_risk_count"] > 0:
         st.markdown("---")
         st.markdown("### 🧪 Drug Candidate Filtering Strategy")
@@ -265,16 +435,14 @@ def render_results(res, cutoff, show_adv, enable_filtering):
         
         st.success(f"🎯 **{df_summary['high_risk_count']} high-risk mutations** identified (≥{cutoff:.2f} probability)")
         
-        # Group tabs
         if df_summary["filter_summary"]:
             tabs = st.tabs([f"Group {g}" for g in df_summary["filter_summary"].keys()])
             
             for idx, (group, info) in enumerate(df_summary["filter_summary"].items()):
-               with tabs[idx]:
+                with tabs[idx]:
                     st.markdown(f"### {info['name']}")
                     st.caption(f"**{info['mutation_count']} mutations** in this group")
                     
-                    # Filter Criteria - Full width (removed test molecule section)
                     st.markdown("#### 📋 Filter Criteria")
                     st.markdown(info["description"])
                     
@@ -284,7 +452,6 @@ def render_results(res, cutoff, show_adv, enable_filtering):
                         with mut_cols[i % 5]:
                             st.code(mut)
                     
-                    # Example molecules - FIXED background
                     st.markdown("---")
                     st.markdown("#### 💊 Example Drug Candidates (from simulated DB)")
                     
@@ -297,9 +464,7 @@ def render_results(res, cutoff, show_adv, enable_filtering):
                         else:
                             st.info("No example molecules available for this group")
     
-    # REMOVED: Design regions section completely deleted
-    
-    # Download section
+    # Download
     st.markdown("---")
     st.markdown("### 📥 Export Results")
     
@@ -342,26 +507,33 @@ def render_results(res, cutoff, show_adv, enable_filtering):
                 )
 
 
-# --- Run scan ---
+# Run scan
 if scan:
-    try:
-        with st.spinner("🔍 Scanning mutations..."):
-            st.session_state.res = mutational_scan(
-                seq,
-                int(start),
-                int(end),
-                gene,
-                enable_drug_filtering=st.session_state.enable_filtering,
-                resistance_cutoff=st.session_state.cutoff,
-                demo_mode=True
-            )
-        st.success("✅ Scan completed successfully!")
-        st.balloons()
-    except Exception as e:
-        st.error(f"❌ Error during scanning: {e}")
-        st.exception(e)
+    if not protein_seq:
+        st.error("❌ Please provide a valid sequence (protein or nucleotide)")
+    elif start > end:
+        st.error("❌ Region start must be ≤ region end")
+    elif end > len(protein_seq):
+        st.error(f"❌ Region end ({end}) exceeds sequence length ({len(protein_seq)})")
+    else:
+        try:
+            with st.spinner("🔍 Scanning mutations..."):
+                st.session_state.res = mutational_scan(
+                    protein_seq,
+                    int(start),
+                    int(end),
+                    gene,
+                    enable_drug_filtering=st.session_state.enable_filtering,
+                    resistance_cutoff=st.session_state.cutoff,
+                    demo_mode=True
+                )
+            st.success("✅ Scan completed successfully!")
+            st.balloons()
+        except Exception as e:
+            st.error(f"❌ Error during scanning: {e}")
+            st.exception(e)
 
-# --- Display results ---
+# Display results
 if st.session_state.res:
     render_results(
         st.session_state.res,
@@ -376,17 +548,20 @@ else:
         st.markdown("""
         ### How to use this tool:
         
-        1. **Enter sequence**: Paste your protein sequence (default: rpoB fragment)
-        2. **Set region**: Choose which amino acids to scan (e.g., 150-200)
-        3. **Gene hint**: Specify gene name for drug panel selection
-        4. **Adjust settings**: 
-           - Resistance cutoff: Higher = stricter (default 0.7)
-           - Enable drug filtering: Get molecule suggestions
-        5. **Click Scan**: Run the analysis
-        6. **Review results**:
-           - Mutation table with risk classification
-           - Group-based drug candidates
-           - Download CSV for further analysis
+        **New: Nucleotide Input Support! 🧬**
+        - Choose "Nucleotide (DNA/RNA)" to input DNA sequence
+        - Auto-detect ORF or manually select reading frame
+        - System will translate to protein automatically
+        
+        **Standard Workflow:**
+        1. **Select input type**: Amino Acid or Nucleotide
+        2. **Enter sequence**: Paste your sequence
+        3. **Set region**: Choose which positions to scan
+        4. **Gene hint**: Specify gene name (optional)
+        5. **Adjust settings**: Cutoff & drug filtering
+        6. **Click Scan**: Run the analysis
+        7. **Review results**: Mutations, groups, drug candidates
+        8. **Download**: Export CSV for further analysis
         
         ### Understanding Groups:
         - **H (Hydrophobic)**: Need lipophilic molecules
