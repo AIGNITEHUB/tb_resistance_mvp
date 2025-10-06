@@ -257,7 +257,7 @@ class FilterCriteriaHelper:
         """Get formatted description for a group"""
         if group not in cls.CRITERIA:
             return f"Unknown group: {group}"
-        
+
         info = cls.CRITERIA[group]
         lines = [
             f"**{info['name']}**",
@@ -266,13 +266,14 @@ class FilterCriteriaHelper:
             f"",
             f"🎯 **Design Strategy:** {info['target']}",
             f"",
-            f"⚗️ **Target Properties:**"
+            f"⚗️ **Target Properties:**",
+            ""
         ]
-        
+
         for key, val in info['properties'].items():
-            lines.append(f"  • {key}: {val}")
-        
-        return "\n".join(lines)
+            lines.append(f"- **{key}**: {val}")
+
+        return "\n\n".join(lines)
 
 
 # Quick test
