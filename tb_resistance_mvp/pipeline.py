@@ -1,6 +1,6 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from .constants import AAS, GENE_DRUGS, DEFAULT_DRUGS
-from .features import physchem_features
+from .features import physchem_features, translate_codon
 from .model import HeuristicModel
 from statistics import mean
 
@@ -11,6 +11,9 @@ try:
 except ImportError:
     # Fallback if demo module not available
     DEMO_MODE = False
+
+# Nucleotides for mutation
+NUCLEOTIDES = ['A', 'T', 'C', 'G']
 
 
 def _window_scores(heatmap_drug: dict, start: int, end: int, w: int = 12):
@@ -81,20 +84,25 @@ def mutational_scan(
     gene_hint: str = "",
     enable_drug_filtering: bool = True,
     resistance_cutoff: float = 0.7,
-    demo_mode: bool = True  # NEW: Enable demo mode by default
+    demo_mode: bool = True,  # NEW: Enable demo mode by default
+    nucleotide_sequence: Optional[str] = None,  # NEW: Original nucleotide sequence
+    orf_start: int = 0  # NEW: ORF start position (0-indexed)
 ) -> Dict:
     """
     Perform mutational scanning with optional drug candidate filtering
-    
+    NOW MUTATES AT NUCLEOTIDE LEVEL instead of amino acid level
+
     Args:
-        sequence: Protein sequence
-        region_start: Start position (1-indexed)
-        region_end: End position (1-indexed)
+        sequence: Protein sequence (translated from nucleotide)
+        region_start: Start AA position (1-indexed)
+        region_end: End AA position (1-indexed)
         gene_hint: Gene name hint (rpoB, katG, etc.)
         enable_drug_filtering: Enable 6-group classification and filtering
         resistance_cutoff: Probability threshold for high-risk classification
         demo_mode: Use fake molecules for demo (no RDKit needed)
-    
+        nucleotide_sequence: Original DNA/RNA sequence (optional, for NT-level mutations)
+        orf_start: ORF start position in nucleotide sequence (0-indexed)
+
     Returns:
         Dictionary with mutation matrix, heatmap, and drug suggestions
     """
@@ -104,41 +112,120 @@ def mutational_scan(
         raise ValueError("Empty sequence")
     if not (1 <= region_start <= L and 1 <= region_end <= L and region_start <= region_end):
         raise ValueError("Invalid region")
-    
+
     drugs = infer_drugs(gene_hint)
     model = HeuristicModel(drugs)
     records = []
-    
-    for pos1 in range(region_start, region_end + 1):
-        wt = sequence[pos1 - 1]
-        for mut in AAS:
-            if mut == wt:
-                continue
-            
-            feats = physchem_features(wt, mut, pos1, L)
-            probs = model.predict(feats)
-            
-            # Simple mechanism tag (legacy)
-            mech = "binding_site" if feats["d_hydro"] > 1.5 else (
-                "stability" if abs(feats["d_vol"]) > 0.4 else (
-                    "charge_effect" if abs(feats["d_charge"]) > 0 else "neutralish"
+
+    # NEW: Mutate at nucleotide level if nucleotide sequence is provided
+    if nucleotide_sequence:
+        nucleotide_sequence = nucleotide_sequence.upper().replace(" ", "").replace("\n", "").replace("U", "T")
+
+        # Convert AA region to nucleotide region
+        nt_region_start = orf_start + (region_start - 1) * 3  # 0-indexed
+        nt_region_end = orf_start + region_end * 3  # 0-indexed, exclusive
+
+        # Iterate through each nucleotide position in the region
+        for nt_pos in range(nt_region_start, nt_region_end):
+            if nt_pos >= len(nucleotide_sequence):
+                break
+
+            wt_nt = nucleotide_sequence[nt_pos]
+
+            # Determine which codon and position within codon
+            codon_idx = (nt_pos - orf_start) // 3  # 0-indexed codon position
+            pos_in_codon = (nt_pos - orf_start) % 3  # 0=first, 1=second, 2=third position
+            aa_pos = codon_idx + 1  # 1-indexed AA position
+
+            # Get the original codon
+            codon_start = orf_start + codon_idx * 3
+            if codon_start + 3 > len(nucleotide_sequence):
+                break
+            wt_codon = nucleotide_sequence[codon_start:codon_start + 3]
+            wt_aa = translate_codon(wt_codon)
+
+            # Try all 3 possible nucleotide mutations
+            for mut_nt in NUCLEOTIDES:
+                if mut_nt == wt_nt:
+                    continue
+
+                # Create mutated codon
+                mut_codon = list(wt_codon)
+                mut_codon[pos_in_codon] = mut_nt
+                mut_codon_str = ''.join(mut_codon)
+                mut_aa = translate_codon(mut_codon_str)
+
+                # Skip if synonymous mutation (same amino acid)
+                if mut_aa == wt_aa:
+                    continue
+
+                # Calculate features based on AA change
+                feats = physchem_features(wt_aa, mut_aa, aa_pos, L)
+                probs = model.predict(feats)
+
+                # Simple mechanism tag (legacy)
+                mech = "binding_site" if feats["d_hydro"] > 1.5 else (
+                    "stability" if abs(feats["d_vol"]) > 0.4 else (
+                        "charge_effect" if abs(feats["d_charge"]) > 0 else "neutralish"
+                    )
                 )
-            )
-            
-            # NEW: Classify into 6 groups
-            group = "General"
-            if enable_drug_filtering and DEMO_MODE:
-                group = MutationGroupClassifier.classify(feats, wt, mut)
-            
-            records.append({
-                "pos": pos1,
-                "wt": wt,
-                "mut": mut,
-                "features": feats,
-                "p_resist": probs,
-                "mechanism": mech,
-                "group": group
-            })
+
+                # NEW: Classify into 6 groups
+                group = "General"
+                if enable_drug_filtering and DEMO_MODE:
+                    group = MutationGroupClassifier.classify(feats, wt_aa, mut_aa)
+
+                records.append({
+                    "nt_pos": nt_pos + 1,  # 1-indexed NT position
+                    "wt_nt": wt_nt,
+                    "mut_nt": mut_nt,
+                    "wt_codon": wt_codon,
+                    "mut_codon": mut_codon_str,
+                    "pos": aa_pos,
+                    "wt": wt_aa,
+                    "mut": mut_aa,
+                    "features": feats,
+                    "p_resist": probs,
+                    "mechanism": mech,
+                    "group": group
+                })
+    else:
+        # FALLBACK: Old AA-level mutation logic (for backward compatibility)
+        for pos1 in range(region_start, region_end + 1):
+            wt = sequence[pos1 - 1]
+            for mut in AAS:
+                if mut == wt:
+                    continue
+
+                feats = physchem_features(wt, mut, pos1, L)
+                probs = model.predict(feats)
+
+                # Simple mechanism tag (legacy)
+                mech = "binding_site" if feats["d_hydro"] > 1.5 else (
+                    "stability" if abs(feats["d_vol"]) > 0.4 else (
+                        "charge_effect" if abs(feats["d_charge"]) > 0 else "neutralish"
+                    )
+                )
+
+                # NEW: Classify into 6 groups
+                group = "General"
+                if enable_drug_filtering and DEMO_MODE:
+                    group = MutationGroupClassifier.classify(feats, wt, mut)
+
+                records.append({
+                    "nt_pos": "N/A",
+                    "wt_nt": "N/A",
+                    "mut_nt": "N/A",
+                    "wt_codon": "N/A",
+                    "mut_codon": "N/A",
+                    "pos": pos1,
+                    "wt": wt,
+                    "mut": mut,
+                    "features": feats,
+                    "p_resist": probs,
+                    "mechanism": mech,
+                    "group": group
+                })
     
     # Aggregate heatmap
     heatmap = {d: {} for d in drugs}
