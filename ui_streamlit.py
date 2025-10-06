@@ -331,19 +331,17 @@ def build_df(res, cutoff, nt_seq="", orf_start=0):
 
 def render_molecule_card(mol, group):
     """Render molecule card with dark background"""
+    # Pre-calculate charge text to avoid HTML parsing issues
+    charge_text = f" | Charge: {mol.get('charge', 0):+d}" if 'charge' in mol else ""
+
     st.markdown(f"""
     <div class="molecule-card">
-        <strong>{mol.get('name', 'Unknown')}</strong> 
+        <strong>{mol.get('name', 'Unknown')}</strong>
         <span style="float:right; color:#888;">Score: {mol.get('score', 0):.2f}</span>
         <br>
         <code>{mol.get('smiles', 'N/A')}</code>
         <br>
-        <small>
-        MW: {mol.get('mw', 0):.1f} | 
-        LogP: {mol.get('logp', 0):.2f} | 
-        TPSA: {mol.get('tpsa', 0):.1f}
-        {f" | Charge: {mol.get('charge', 0):+d}" if 'charge' in mol else ""}
-        </small>
+        <small>MW: {mol.get('mw', 0):.1f} | LogP: {mol.get('logp', 0):.2f} | TPSA: {mol.get('tpsa', 0):.1f}{charge_text}</small>
     </div>
     """, unsafe_allow_html=True)
 
@@ -433,16 +431,46 @@ def render_results(res, cutoff, show_adv, enable_filtering, nt_seq="", orf_start
                 with tabs[idx]:
                     st.markdown(f"### {info['name']}")
                     st.caption(f"**{info['mutation_count']} mutations** in this group")
-                    
+
                     st.markdown("#### 📋 Filter Criteria")
                     st.markdown(info["description"])
-                    
-                    st.markdown("#### 🧬 Example Mutations")
-                    mut_cols = st.columns(5)
-                    for i, mut in enumerate(info["example_mutations"][:5]):
-                        with mut_cols[i % 5]:
-                            st.code(mut)
-                    
+
+                    st.markdown("#### 🧬 Mutations in this Group")
+
+                    # Build mutation table for this group
+                    group_mutations = [m for m in res["matrix"] if m.get("group") == group and max(m["p_resist"].values()) >= cutoff]
+
+                    if group_mutations:
+                        group_df_rows = []
+                        for m in group_mutations:
+                            max_p = max(m["p_resist"].values())
+                            row = {
+                                "nt_pos": m.get("nt_pos", "N/A"),
+                                "wt_nt": m.get("wt_nt", "N/A"),
+                                "mut_nt": m.get("mut_nt", "N/A"),
+                                "wt_codon": m.get("wt_codon", "N/A"),
+                                "mut_codon": m.get("mut_codon", "N/A"),
+                                "pos": m["pos"],
+                                "wt_aa": m["wt"],
+                                "mut_aa": m["mut"],
+                                "Probability (max)": round(max_p, 4),
+                                "mechanism": m["mechanism"]
+                            }
+                            for d, p in m["p_resist"].items():
+                                row[f"P({d})"] = round(p, 4)
+                            group_df_rows.append(row)
+
+                        group_df = pd.DataFrame(group_df_rows)
+
+                        # Define columns to display
+                        p_cols = [c for c in group_df.columns if re.match(r'^P\(.+\)$', c)]
+                        display_cols = ["nt_pos", "wt_nt", "mut_nt", "wt_codon", "mut_codon", "pos", "wt_aa", "mut_aa", "mechanism", "Probability (max)"] + p_cols
+                        display_cols = [c for c in display_cols if c in group_df.columns]
+
+                        st.dataframe(group_df[display_cols], use_container_width=True, height=300)
+                    else:
+                        st.info("No mutations found in this group")
+
                     st.markdown("---")
                     st.markdown("#### 💊 Example Drug Candidates (from simulated DB)")
                     
